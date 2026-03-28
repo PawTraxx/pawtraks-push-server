@@ -114,6 +114,7 @@ app.post('/unsubscribe', function(req, res) {
     delete db.subscriptions[userId];
     delete db.schedules[userId];
     saveData(db);
+    console.log('Unsubscribed user:', userId);
   }
   res.json({ ok: true });
 });
