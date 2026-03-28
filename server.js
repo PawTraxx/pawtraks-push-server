@@ -161,7 +161,7 @@ cron.schedule('*/5 * * * *', async function() {
       var lastFed = dog.lastFed ? new Date(dog.lastFed).getTime() : 0;
       var lastFoodNotif = userNotified['food-' + dog.id] || 0;
       var foodOverdue = (now - lastFed) > feedCd;
-      var foodNotifDue = (now - lastFoodNotif) > feedCd;
+      var foodNotifDue = lastFoodNotif === 0 || (now - lastFoodNotif) > feedCd;
       console.log('[CHECK] ' + name + ' food: overdue=' + foodOverdue + ' notifDue=' + foodNotifDue + ' lastFed=' + (lastFed ? new Date(lastFed).toISOString() : 'never') + ' feedCd=' + (feedCd/60000) + 'min');
       if (foodOverdue && foodNotifDue) {
         var result = await sendPush(sub,
@@ -177,7 +177,7 @@ cron.schedule('*/5 * * * *', async function() {
       var lastWater = dog.lastWater ? new Date(dog.lastWater).getTime() : 0;
       var lastWaterNotif = userNotified['water-' + dog.id] || 0;
       var waterOverdue = (now - lastWater) > feedCd;
-      var waterNotifDue = (now - lastWaterNotif) > feedCd;
+      var waterNotifDue = lastWaterNotif === 0 || (now - lastWaterNotif) > feedCd;
       if (waterOverdue && waterNotifDue) {
         var wResult = await sendPush(sub,
           '💧 ' + name + ' needs water!',
@@ -191,7 +191,7 @@ cron.schedule('*/5 * * * *', async function() {
       var lastOut = dog.lastOutside ? new Date(dog.lastOutside).getTime() : 0;
       var lastOutNotif = userNotified['outside-' + dog.id] || 0;
       var outOverdue = (now - lastOut) > outCd;
-      var outNotifDue = (now - lastOutNotif) > outCd;
+      var outNotifDue = lastOutNotif === 0 || (now - lastOutNotif) > outCd;
       if (outOverdue && outNotifDue) {
         var oResult = await sendPush(sub,
           '🌳 ' + name + ' needs to go outside!',
