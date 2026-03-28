@@ -49,6 +49,7 @@ async function sendPush(sub, title, body, tag) {
       tag: tag,
       data: { url: '/' }
     }));
+    console.log('Push sent:', tag);
     return true;
   } catch(e) {
     // 410 = subscription expired/invalid
@@ -102,6 +103,7 @@ app.post('/schedule', function(req, res) {
   }
   db.schedules[userId] = { dogs: dogs, updatedAt: Date.now() };
   saveData(db);
+  console.log('Schedule saved for user:', userId, '— dogs:', dogs.length);
   res.json({ ok: true });
 });
 
