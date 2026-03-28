@@ -17,8 +17,8 @@ app.use(function(req, res, next) {
 });
 
 // VAPID keys
-const VAPID_PUBLIC  = process.env.VAPID_PUBLIC  || 'A0IABKpGcJyGslrLGQmvQXwNm0BhrzEP9RMISt2_EaJT4UHRtibqows7ZdayxvqprtG56kvCaHrBXZEo6w7r4koqpj8';
-const VAPID_PRIVATE = process.env.VAPID_PRIVATE || '5IV-6-r80J8P_MTW5q2twH-3KuLGFOO2SbnKau0WU0Y';
+const VAPID_PUBLIC  = process.env.VAPID_PUBLIC  || 'BDog6Dq3O44SgyVZhKYL2ypqykH02_BBLdYEIAZiuhCQbcVdWWm-t6dkQirES-SgzUK06lQVyvidyC9p7tGVNeU';
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE || 'lv5NXDWuxy8RfCsuZUVJGfZ7T8AV1gPcD-pHhL7daas';
 const VAPID_EMAIL   = process.env.VAPID_EMAIL   || 'mailto:pawtraks@master.com';
 
 webpush.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC, VAPID_PRIVATE);
