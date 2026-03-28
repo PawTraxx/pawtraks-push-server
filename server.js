@@ -169,11 +169,13 @@ cron.schedule('*/5 * * * *', async function() {
       var feedCd = getFeedCooldown(age);
       var outCd  = getOutsideCooldown(age);
 
-      // Food reminder — fire when overdue AND haven't notified in last feedCd ms
+      var REPEAT_INTERVAL = 30 * 60000; // repeat reminder every 30 minutes if still not logged
+
+      // Food reminder — fire when overdue, repeat every 30 min until logged
       var lastFed = dog.lastFed ? new Date(dog.lastFed).getTime() : 0;
       var lastFoodNotif = userNotified['food-' + dog.id] || 0;
       var foodOverdue = (now - lastFed) > feedCd;
-      var foodNotifDue = lastFoodNotif === 0 || (now - lastFoodNotif) > feedCd;
+      var foodNotifDue = lastFoodNotif === 0 || (now - lastFoodNotif) > REPEAT_INTERVAL;
       console.log('[CHECK] ' + name + ' food: overdue=' + foodOverdue + ' notifDue=' + foodNotifDue + ' lastFed=' + (lastFed ? new Date(lastFed).toISOString() : 'never') + ' feedCd=' + (feedCd/60000) + 'min');
       if (foodOverdue && foodNotifDue) {
         var result = await sendPush(sub,
@@ -185,11 +187,11 @@ cron.schedule('*/5 * * * *', async function() {
         if (result) { userNotified['food-' + dog.id] = now; }
       }
 
-      // Water reminder
+      // Water reminder — repeat every 30 min until logged
       var lastWater = dog.lastWater ? new Date(dog.lastWater).getTime() : 0;
       var lastWaterNotif = userNotified['water-' + dog.id] || 0;
       var waterOverdue = (now - lastWater) > feedCd;
-      var waterNotifDue = lastWaterNotif === 0 || (now - lastWaterNotif) > feedCd;
+      var waterNotifDue = lastWaterNotif === 0 || (now - lastWaterNotif) > REPEAT_INTERVAL;
       if (waterOverdue && waterNotifDue) {
         var wResult = await sendPush(sub,
           '💧 ' + name + ' needs water!',
@@ -199,11 +201,11 @@ cron.schedule('*/5 * * * *', async function() {
         if (wResult) { userNotified['water-' + dog.id] = now; }
       }
 
-      // Outside reminder
+      // Outside reminder — repeat every 30 min until logged
       var lastOut = dog.lastOutside ? new Date(dog.lastOutside).getTime() : 0;
       var lastOutNotif = userNotified['outside-' + dog.id] || 0;
       var outOverdue = (now - lastOut) > outCd;
-      var outNotifDue = lastOutNotif === 0 || (now - lastOutNotif) > outCd;
+      var outNotifDue = lastOutNotif === 0 || (now - lastOutNotif) > REPEAT_INTERVAL;
       if (outOverdue && outNotifDue) {
         var oResult = await sendPush(sub,
           '🌳 ' + name + ' needs to go outside!',
