@@ -118,6 +118,18 @@ app.post('/unsubscribe', function(req, res) {
   res.json({ ok: true });
 });
 
+// Clear lastNotified for a user — forces next cron to send notifications
+app.post('/clear-notified', function(req, res) {
+  var { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'Missing userId' });
+  if (db.lastNotified && db.lastNotified[userId]) {
+    delete db.lastNotified[userId];
+    saveData(db);
+    console.log('Cleared lastNotified for:', userId);
+  }
+  res.json({ ok: true });
+});
+
 // Test endpoint — send immediate notification to a user
 app.post('/test-notify', async function(req, res) {
   var { userId } = req.body;
