@@ -131,6 +131,15 @@ app.post('/clear-notified', function(req, res) {
   res.json({ ok: true });
 });
 
+// List all subscribed users (admin only)
+app.get('/subscribers', function(req, res) {
+  res.json({
+    count: Object.keys(db.subscriptions).length,
+    users: Object.keys(db.subscriptions),
+    scheduled: Object.keys(db.schedules)
+  });
+});
+
 // Test endpoint — send immediate notification to a user
 app.post('/test-notify', async function(req, res) {
   var { userId } = req.body;
