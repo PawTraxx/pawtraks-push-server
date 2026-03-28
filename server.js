@@ -162,6 +162,7 @@ cron.schedule('*/5 * * * *', async function() {
       var lastFoodNotif = userNotified['food-' + dog.id] || 0;
       var foodOverdue = (now - lastFed) > feedCd;
       var foodNotifDue = (now - lastFoodNotif) > feedCd;
+      console.log('[CHECK] ' + name + ' food: overdue=' + foodOverdue + ' notifDue=' + foodNotifDue + ' lastFed=' + (lastFed ? new Date(lastFed).toISOString() : 'never') + ' feedCd=' + (feedCd/60000) + 'min');
       if (foodOverdue && foodNotifDue) {
         var result = await sendPush(sub,
           '🍽️ Time to feed ' + name + '!',
