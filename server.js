@@ -72,7 +72,7 @@ function getOutsideCooldown(age) {
   if (age < 0.5) return 0.5 * 3600000;
   if (age < 1)   return 1   * 3600000;
   if (age < 3)   return 1.5 * 3600000;
-  if (age < 8)   return 2   * 3600000;
+  if (age < 8)   return 4   * 3600000;
   return             3   * 3600000;
 }
 
