@@ -132,6 +132,10 @@ cron.schedule('*/5 * * * *', async function() {
 
     var schedule = db.schedules[userId];
     var dogs = schedule.dogs || [];
+    // Track last notification times per user/dog
+    if (!db.lastNotified) db.lastNotified = {};
+    if (!db.lastNotified[userId]) db.lastNotified[userId] = {};
+    var userNotified = db.lastNotified[userId];
 
     for (var j = 0; j < dogs.length; j++) {
       var dog = dogs[j];
@@ -140,38 +144,47 @@ cron.schedule('*/5 * * * *', async function() {
       var feedCd = getFeedCooldown(age);
       var outCd  = getOutsideCooldown(age);
 
-      // Food reminder
+      // Food reminder — fire when overdue AND haven't notified in last feedCd ms
       var lastFed = dog.lastFed ? new Date(dog.lastFed).getTime() : 0;
-      var fedOverdueMs = now - lastFed - feedCd;
-      if (fedOverdueMs >= 0 && fedOverdueMs < 5 * 60000) {
+      var lastFoodNotif = userNotified['food-' + dog.id] || 0;
+      var foodOverdue = (now - lastFed) > feedCd;
+      var foodNotifDue = (now - lastFoodNotif) > feedCd;
+      if (foodOverdue && foodNotifDue) {
         var result = await sendPush(sub,
           '🍽️ Time to feed ' + name + '!',
           name + ' is due for their next meal. Tap to log it in PawTraks.',
           'feed-' + dog.id
         );
         if (result === 'expired') { delete db.subscriptions[userId]; saveData(db); break; }
+        if (result) { userNotified['food-' + dog.id] = now; }
       }
 
       // Water reminder
       var lastWater = dog.lastWater ? new Date(dog.lastWater).getTime() : 0;
-      var waterOverdueMs = now - lastWater - feedCd;
-      if (waterOverdueMs >= 0 && waterOverdueMs < 5 * 60000) {
-        await sendPush(sub,
+      var lastWaterNotif = userNotified['water-' + dog.id] || 0;
+      var waterOverdue = (now - lastWater) > feedCd;
+      var waterNotifDue = (now - lastWaterNotif) > feedCd;
+      if (waterOverdue && waterNotifDue) {
+        var wResult = await sendPush(sub,
           '💧 ' + name + ' needs water!',
           "Make sure " + name + "'s water bowl is fresh. Tap to log it in PawTraks.",
           'water-' + dog.id
         );
+        if (wResult) { userNotified['water-' + dog.id] = now; }
       }
 
       // Outside reminder
       var lastOut = dog.lastOutside ? new Date(dog.lastOutside).getTime() : 0;
-      var outOverdueMs = now - lastOut - outCd;
-      if (outOverdueMs >= 0 && outOverdueMs < 5 * 60000) {
-        await sendPush(sub,
+      var lastOutNotif = userNotified['outside-' + dog.id] || 0;
+      var outOverdue = (now - lastOut) > outCd;
+      var outNotifDue = (now - lastOutNotif) > outCd;
+      if (outOverdue && outNotifDue) {
+        var oResult = await sendPush(sub,
           '🌳 ' + name + ' needs to go outside!',
           name + ' is due for an outdoor break. Tap to log it in PawTraks.',
           'outside-' + dog.id
         );
+        if (oResult) { userNotified['outside-' + dog.id] = now; }
       }
 
       // Vet appointment reminders
@@ -181,18 +194,23 @@ cron.schedule('*/5 * * * *', async function() {
         if (!appt.date) continue;
         var apptMs = new Date(appt.date).getTime();
         var hoursUntil = (apptMs - now) / 3600000;
-        // Remind at 24h and 2h before
-        if ((hoursUntil <= 24 && hoursUntil > 23.9) || (hoursUntil <= 2 && hoursUntil > 1.9)) {
-          var when = hoursUntil > 3 ? 'tomorrow' : 'in 2 hours';
-          await sendPush(sub,
+        var vetKey = 'vet-' + appt.id;
+        var lastVetNotif = userNotified[vetKey] || 0;
+        var vetNotifDue = (now - lastVetNotif) > 3600000; // max once per hour
+        if (vetNotifDue && ((hoursUntil <= 24 && hoursUntil > 23) || (hoursUntil <= 2 && hoursUntil > 1))) {
+          var when = hoursUntil > 3 ? 'tomorrow' : 'in about 2 hours';
+          var vResult = await sendPush(sub,
             '🩺 Vet appointment ' + when + '!',
             name + ': ' + (appt.reason || 'Vet visit') + (appt.vet ? ' with ' + appt.vet : ''),
-            'vet-' + appt.id
+            vetKey
           );
+          if (vResult) { userNotified[vetKey] = now; }
         }
       }
     }
+    db.lastNotified[userId] = userNotified;
   }
+  saveData(db);
 });
 
 // Daily 8 AM wellness reminder
