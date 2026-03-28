@@ -115,6 +115,15 @@ app.post('/unsubscribe', function(req, res) {
   res.json({ ok: true });
 });
 
+// Test endpoint — send immediate notification to a user
+app.post('/test-notify', async function(req, res) {
+  var { userId } = req.body;
+  var sub = db.subscriptions[userId];
+  if (!sub) return res.status(404).json({ error: 'No subscription for ' + userId });
+  var result = await sendPush(sub, '🐾 PawTraks Test!', 'Background notifications are working!', 'test');
+  res.json({ result: result });
+});
+
 // Get VAPID public key (app needs this to subscribe)
 app.get('/vapid-public-key', function(req, res) {
   res.json({ key: VAPID_PUBLIC });
@@ -124,6 +133,7 @@ app.get('/vapid-public-key', function(req, res) {
 cron.schedule('*/5 * * * *', async function() {
   var now = Date.now();
   var userIds = Object.keys(db.schedules);
+  console.log('[CRON] Running at ' + new Date().toISOString() + ' — ' + userIds.length + ' users, ' + Object.keys(db.subscriptions).length + ' subs');
 
   for (var i = 0; i < userIds.length; i++) {
     var userId = userIds[i];
