@@ -23,8 +23,9 @@ const VAPID_EMAIL   = process.env.VAPID_EMAIL   || 'mailto:pawtraks@master.com';
 
 webpush.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC, VAPID_PRIVATE);
 
-// Simple file-based storage
-var DATA_FILE = path.join(__dirname, 'data.json');
+// Simple file-based storage — uses persistent volume at /app/data
+var DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
+var DATA_FILE = path.join(DATA_DIR, 'data.json');
 function loadData() {
   try {
     if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
