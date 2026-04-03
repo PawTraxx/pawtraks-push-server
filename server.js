@@ -7,7 +7,7 @@ const path = require('path');
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-// CORS — allow your Vercel app
+// CORS
 app.use(function(req, res, next) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -23,9 +23,10 @@ const VAPID_EMAIL   = process.env.VAPID_EMAIL   || 'mailto:pawtraks@master.com';
 
 webpush.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC, VAPID_PRIVATE);
 
-// Simple file-based storage — uses persistent volume at /app/data
-var DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
+// Storage
+var DATA_DIR  = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
 var DATA_FILE = path.join(DATA_DIR, 'data.json');
+
 function loadData() {
   try {
     if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
@@ -37,53 +38,39 @@ function saveData(d) {
 }
 
 var db = loadData();
+// Migrate old format: remove any leftover dogs/lastNotified keys
+if (db.lastNotified) { delete db.lastNotified; saveData(db); }
 
-// Helper: send push to a subscription
+// Send a push notification
 async function sendPush(sub, title, body, tag) {
   try {
     await webpush.sendNotification(sub, JSON.stringify({
-      title: title,
-      body: body,
+      title, body,
       icon: '/logo192.png',
       badge: '/logo192.png',
-      tag: tag,
+      tag,
       data: { url: '/' }
     }));
-    console.log('Push sent:', tag);
+    console.log('[PUSH] Sent:', tag);
     return true;
   } catch(e) {
-    // 410 = subscription expired/invalid
     if (e.statusCode === 410) return 'expired';
-    console.log('Push error:', e.statusCode, e.message);
+    console.log('[PUSH] Error:', e.statusCode, e.message);
     return false;
   }
 }
 
-// Helper: age-based cooldowns (ms)
-function getFeedCooldown(age) {
-  if (age < 0.083) return 0.5 * 3600000;
-  if (age < 0.5)   return 1.5 * 3600000;
-  if (age < 1)     return 2   * 3600000;
-  if (age < 3)     return 3   * 3600000;
-  if (age < 8)     return 4   * 3600000;
-  return               5   * 3600000;
-}
-function getOutsideCooldown(age) {
-  if (age < 0.5) return 0.5 * 3600000;
-  if (age < 1)   return 1   * 3600000;
-  if (age < 3)   return 1.5 * 3600000;
-  if (age < 8)   return 4   * 3600000;
-  return             3   * 3600000;
-}
+// ── Routes ────────────────────────────────────────────────────────────────────
 
-// ── Routes ──────────────────────────────────────────────
-
-// Health check
 app.get('/', function(req, res) {
-  res.json({ status: 'PawTraks push server running', subs: Object.keys(db.subscriptions).length });
+  res.json({
+    status: 'PawTraks push server running',
+    subs: Object.keys(db.subscriptions).length,
+    scheduled: Object.keys(db.schedules).length
+  });
 });
 
-// Save push subscription from browser
+// Save push subscription
 app.post('/subscribe', function(req, res) {
   var { userId, subscription } = req.body;
   if (!userId || !subscription || !subscription.endpoint) {
@@ -91,47 +78,50 @@ app.post('/subscribe', function(req, res) {
   }
   db.subscriptions[userId] = subscription;
   saveData(db);
-  console.log('Subscription saved for user:', userId);
+  console.log('[SUB] Saved for:', userId);
   res.json({ ok: true });
 });
 
-// Save dog schedule from app
+// Save schedule — expects { userId, schedule: [{ dueAt, title, body }] }
+// The app sends this every time an action is logged, so timestamps are always fresh.
 app.post('/schedule', function(req, res) {
-  var { userId, dogs } = req.body;
-  if (!userId || !Array.isArray(dogs)) {
-    return res.status(400).json({ error: 'Missing userId or dogs' });
+  var { userId, schedule } = req.body;
+
+  // Support legacy format { dogs: [...] } — just ignore it gracefully
+  if (!userId) return res.status(400).json({ error: 'Missing userId' });
+  if (!Array.isArray(schedule)) {
+    console.log('[SCHEDULE] Received legacy dogs format for', userId, '— ignoring, waiting for app update');
+    return res.json({ ok: true, note: 'legacy format ignored' });
   }
-  db.schedules[userId] = { dogs: dogs, updatedAt: Date.now() };
+
+  // Store entries with a "fired" flag so we only send each one once
+  db.schedules[userId] = schedule.map(function(entry) {
+    return {
+      dueAt: entry.dueAt,
+      title: entry.title,
+      body:  entry.body,
+      fired: false
+    };
+  });
+
   saveData(db);
-  console.log('Schedule saved for user:', userId, '— dogs:', dogs.length);
+  console.log('[SCHEDULE] Saved', schedule.length, 'entries for:', userId);
   res.json({ ok: true });
 });
 
-// Remove subscription (on logout)
+// Unsubscribe on logout
 app.post('/unsubscribe', function(req, res) {
   var { userId } = req.body;
   if (userId) {
     delete db.subscriptions[userId];
     delete db.schedules[userId];
     saveData(db);
-    console.log('Unsubscribed user:', userId);
+    console.log('[UNSUB] Removed:', userId);
   }
   res.json({ ok: true });
 });
 
-// Clear lastNotified for a user — forces next cron to send notifications
-app.post('/clear-notified', function(req, res) {
-  var { userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'Missing userId' });
-  if (db.lastNotified && db.lastNotified[userId]) {
-    delete db.lastNotified[userId];
-    saveData(db);
-    console.log('Cleared lastNotified for:', userId);
-  }
-  res.json({ ok: true });
-});
-
-// List all subscribed users (admin only)
+// Admin: list subscribers
 app.get('/subscribers', function(req, res) {
   res.json({
     count: Object.keys(db.subscriptions).length,
@@ -140,138 +130,67 @@ app.get('/subscribers', function(req, res) {
   });
 });
 
-// Test endpoint — send immediate notification to a user
+// Test notification
 app.post('/test-notify', async function(req, res) {
   var { userId } = req.body;
   var sub = db.subscriptions[userId];
   if (!sub) return res.status(404).json({ error: 'No subscription for ' + userId });
   var result = await sendPush(sub, '🐾 PawTraks Test!', 'Background notifications are working!', 'test');
-  res.json({ result: result });
+  res.json({ result });
 });
 
-// Get VAPID public key (app needs this to subscribe)
 app.get('/vapid-public-key', function(req, res) {
   res.json({ key: VAPID_PUBLIC });
 });
 
-// ── Notification scheduler (runs every 5 minutes) ───────
+// ── Cron: check every 5 minutes ───────────────────────────────────────────────
+// Only fires a notification when:
+//   1. The entry's dueAt timestamp has passed (now >= dueAt)
+//   2. The entry has not already been fired (fired === false)
+// When the user logs an action in the app, the app posts a fresh schedule with
+// new dueAt timestamps, resetting the fired flags automatically.
+
 cron.schedule('*/5 * * * *', async function() {
   var now = Date.now();
   var userIds = Object.keys(db.schedules);
-  console.log('[CRON] Running at ' + new Date().toISOString() + ' — ' + userIds.length + ' users, ' + Object.keys(db.subscriptions).length + ' subs');
+  console.log('[CRON]', new Date().toISOString(), '—', userIds.length, 'users with schedules');
+
+  var changed = false;
 
   for (var i = 0; i < userIds.length; i++) {
     var userId = userIds[i];
     var sub = db.subscriptions[userId];
     if (!sub) continue;
 
-    var schedule = db.schedules[userId];
-    var dogs = schedule.dogs || [];
-    // Track last notification times per user/dog
-    if (!db.lastNotified) db.lastNotified = {};
-    if (!db.lastNotified[userId]) db.lastNotified[userId] = {};
-    var userNotified = db.lastNotified[userId];
+    var entries = db.schedules[userId];
+    if (!Array.isArray(entries)) continue;
 
-    for (var j = 0; j < dogs.length; j++) {
-      var dog = dogs[j];
-      var age = parseFloat(dog.age) || 1;
-      var name = dog.name;
-      var feedCd = getFeedCooldown(age);
-      var outCd  = getOutsideCooldown(age);
+    for (var j = 0; j < entries.length; j++) {
+      var entry = entries[j];
+      if (entry.fired) continue;           // already sent — skip
+      if (now < entry.dueAt) continue;     // not due yet — skip
 
-      var REPEAT_INTERVAL = 30 * 60000; // repeat reminder every 30 minutes if still not logged
+      var result = await sendPush(sub, entry.title, entry.body, 'scheduled-' + j);
 
-      // Food reminder — fire when overdue, repeat every 30 min until logged
-      var lastFed = dog.lastFed ? new Date(dog.lastFed).getTime() : 0;
-      var lastFoodNotif = userNotified['food-' + dog.id] || 0;
-      var foodOverdue = (now - lastFed) > feedCd;
-      var foodNotifDue = lastFoodNotif === 0 || (now - lastFoodNotif) > REPEAT_INTERVAL;
-      console.log('[CHECK] ' + name + ' food: overdue=' + foodOverdue + ' notifDue=' + foodNotifDue + ' lastFed=' + (lastFed ? new Date(lastFed).toISOString() : 'never') + ' feedCd=' + (feedCd/60000) + 'min');
-      if (foodOverdue && foodNotifDue) {
-        var result = await sendPush(sub,
-          '🍽️ Time to feed ' + name + '!',
-          name + ' is due for their next meal. Tap to log it in PawTraks.',
-          'feed-' + dog.id
-        );
-        if (result === 'expired') { delete db.subscriptions[userId]; saveData(db); break; }
-        if (result) { userNotified['food-' + dog.id] = now; }
+      if (result === 'expired') {
+        // Subscription dead — clean it up and stop
+        delete db.subscriptions[userId];
+        changed = true;
+        break;
       }
 
-      // Water reminder — repeat every 30 min until logged
-      var lastWater = dog.lastWater ? new Date(dog.lastWater).getTime() : 0;
-      var lastWaterNotif = userNotified['water-' + dog.id] || 0;
-      var waterOverdue = (now - lastWater) > feedCd;
-      var waterNotifDue = lastWaterNotif === 0 || (now - lastWaterNotif) > REPEAT_INTERVAL;
-      if (waterOverdue && waterNotifDue) {
-        var wResult = await sendPush(sub,
-          '💧 ' + name + ' needs water!',
-          "Make sure " + name + "'s water bowl is fresh. Tap to log it in PawTraks.",
-          'water-' + dog.id
-        );
-        if (wResult) { userNotified['water-' + dog.id] = now; }
-      }
-
-      // Outside reminder — repeat every 30 min until logged
-      var lastOut = dog.lastOutside ? new Date(dog.lastOutside).getTime() : 0;
-      var lastOutNotif = userNotified['outside-' + dog.id] || 0;
-      var outOverdue = (now - lastOut) > outCd;
-      var outNotifDue = lastOutNotif === 0 || (now - lastOutNotif) > REPEAT_INTERVAL;
-      if (outOverdue && outNotifDue) {
-        var oResult = await sendPush(sub,
-          '🌳 ' + name + ' needs to go outside!',
-          name + ' is due for an outdoor break. Tap to log it in PawTraks.',
-          'outside-' + dog.id
-        );
-        if (oResult) { userNotified['outside-' + dog.id] = now; }
-      }
-
-      // Vet appointment reminders
-      var appts = dog.vetAppointments || [];
-      for (var k = 0; k < appts.length; k++) {
-        var appt = appts[k];
-        if (!appt.date) continue;
-        var apptMs = new Date(appt.date).getTime();
-        var hoursUntil = (apptMs - now) / 3600000;
-        var vetKey = 'vet-' + appt.id;
-        var lastVetNotif = userNotified[vetKey] || 0;
-        var vetNotifDue = (now - lastVetNotif) > 3600000; // max once per hour
-        if (vetNotifDue && ((hoursUntil <= 24 && hoursUntil > 23) || (hoursUntil <= 2 && hoursUntil > 1))) {
-          var when = hoursUntil > 3 ? 'tomorrow' : 'in about 2 hours';
-          var vResult = await sendPush(sub,
-            '🩺 Vet appointment ' + when + '!',
-            name + ': ' + (appt.reason || 'Vet visit') + (appt.vet ? ' with ' + appt.vet : ''),
-            vetKey
-          );
-          if (vResult) { userNotified[vetKey] = now; }
-        }
+      if (result) {
+        entry.fired = true;  // mark sent so we never fire this entry again
+        changed = true;
+        console.log('[CRON] Fired:', entry.title, 'for', userId);
       }
     }
-    db.lastNotified[userId] = userNotified;
   }
-  saveData(db);
-});
 
-// Daily 8 AM wellness reminder
-cron.schedule('0 8 * * *', async function() {
-  var userIds = Object.keys(db.subscriptions);
-  var messages = [
-    "Don't forget to log your dogs' meals and walks today! 🐾",
-    "Good morning! Your pups are counting on you today 🐕",
-    "Rise and shine! Time to take care of your pack. Open PawTraks to get started. 🌅",
-    "Start your day right — log your dogs' morning routine in PawTraks! ☀️",
-  ];
-
-  for (var i = 0; i < userIds.length; i++) {
-    var userId = userIds[i];
-    var sub = db.subscriptions[userId];
-    var schedule = db.schedules[userId];
-    if (!sub || !schedule) continue;
-    var msg = messages[Math.floor(Math.random() * messages.length)];
-    await sendPush(sub, '🌟 Good Morning from PawTraks!', msg, 'daily-wellness');
-  }
+  if (changed) saveData(db);
 });
 
 var PORT = process.env.PORT || 3001;
 app.listen(PORT, function() {
-  console.log('PawTraks push server running on port ' + PORT);
+  console.log('PawTraks push server running on port', PORT);
 });
