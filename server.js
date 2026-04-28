@@ -190,12 +190,18 @@ cron.schedule('*/5 * * * *', async function() {
   console.log('[CRON]', new Date().toISOString(), '— checking Firebase for due notifications');
 
   var schedules = await buildSchedulesFromFirebase();
+  if (!db.reminders) db.reminders = {};
+
   var userIds = Object.keys(schedules);
+  var changed = false;
 
   for (var i = 0; i < userIds.length; i++) {
     var userId = userIds[i];
     var sub = db.subscriptions[userId];
     if (!sub) continue;
+
+    if (!db.reminders[userId]) db.reminders[userId] = {};
+    var userReminders = db.reminders[userId];
 
     var entries = schedules[userId];
 
@@ -203,15 +209,46 @@ cron.schedule('*/5 * * * *', async function() {
       var entry = entries[j];
       if (now < entry.dueAt) continue;
 
-      var result = await sendPush(sub, entry.title, entry.body, 'scheduled-' + j);
+      var key = entry.title; // unique per action type + dog name
+      if (!userReminders[key]) userReminders[key] = { count: 0, lastFired: 0, firstDueAt: entry.dueAt };
 
-      if (result === 'expired') {
-        delete db.subscriptions[userId];
-        saveData(db);
-        break;
+      var reminder = userReminders[key];
+
+      // If the action was logged since we started reminding, reset
+      if (entry.dueAt > reminder.firstDueAt) {
+        userReminders[key] = { count: 0, lastFired: 0, firstDueAt: entry.dueAt };
+        reminder = userReminders[key];
+      }
+
+      // Stop after 3 reminders
+      if (reminder.count >= 3) continue;
+
+      // First reminder — fire immediately when due
+      if (reminder.count === 0) {
+        var result = await sendPush(sub, entry.title, entry.body, key + '-1');
+        if (result === 'expired') { delete db.subscriptions[userId]; changed = true; break; }
+        if (result) { reminder.count = 1; reminder.lastFired = now; changed = true; }
+      }
+
+      // Second reminder — 1.5 hours after first
+      else if (reminder.count === 1 && now >= reminder.lastFired + 90 * 60 * 1000) {
+        var result = await sendPush(sub, entry.title, '⏰ Reminder: ' + entry.body, key + '-2');
+        if (result === 'expired') { delete db.subscriptions[userId]; changed = true; break; }
+        if (result) { reminder.count = 2; reminder.lastFired = now; changed = true; }
+      }
+
+      // Third reminder — 2 hours after second
+      else if (reminder.count === 2 && now >= reminder.lastFired + 120 * 60 * 1000) {
+        var result = await sendPush(sub, entry.title, '🔔 Final reminder: ' + entry.body, key + '-3');
+        if (result === 'expired') { delete db.subscriptions[userId]; changed = true; break; }
+        if (result) { reminder.count = 3; reminder.lastFired = now; changed = true; }
       }
     }
+
+    db.reminders[userId] = userReminders;
   }
+
+  if (changed) saveData(db);
 });
 
 // Also install firebase-admin on startup check
