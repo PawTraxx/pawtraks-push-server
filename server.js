@@ -3,11 +3,17 @@ const webpush = require('web-push');
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+
+// Init Firebase Admin
+var serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+initializeApp({ credential: cert(serviceAccount) });
+var firestore = getFirestore();
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-// CORS
 app.use(function(req, res, next) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -16,14 +22,12 @@ app.use(function(req, res, next) {
   next();
 });
 
-// VAPID keys
 const VAPID_PUBLIC  = process.env.VAPID_PUBLIC  || 'BDog6Dq3O44SgyVZhKYL2ypqykH02_BBLdYEIAZiuhCQbcVdWWm-t6dkQirES-SgzUK06lQVyvidyC9p7tGVNeU';
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE || 'lv5NXDWuxy8RfCsuZUVJGfZ7T8AV1gPcD-pHhL7daas';
 const VAPID_EMAIL   = process.env.VAPID_EMAIL   || 'mailto:pawtraks@master.com';
 
 webpush.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC, VAPID_PRIVATE);
 
-// Storage
 var DATA_DIR  = process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
 var DATA_FILE = path.join(DATA_DIR, 'data.json');
 
@@ -31,17 +35,14 @@ function loadData() {
   try {
     if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
   } catch(e) {}
-  return { subscriptions: {}, schedules: {} };
+  return { subscriptions: {} };
 }
 function saveData(d) {
   try { fs.writeFileSync(DATA_FILE, JSON.stringify(d)); } catch(e) {}
 }
 
 var db = loadData();
-// Migrate old format: remove any leftover dogs/lastNotified keys
-if (db.lastNotified) { delete db.lastNotified; saveData(db); }
 
-// Send a push notification
 async function sendPush(sub, title, body, tag) {
   try {
     await webpush.sendNotification(sub, JSON.stringify({
@@ -60,17 +61,78 @@ async function sendPush(sub, title, body, tag) {
   }
 }
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// Cooldown helpers (mirrors App.js logic)
+function getFedCooldown(dog) {
+  var size = (dog.weight || 20) < 20 ? 'small' : (dog.weight || 20) < 50 ? 'medium' : 'large';
+  return size === 'small' ? 8*3600000 : size === 'medium' ? 10*3600000 : 12*3600000;
+}
+function getWaterCooldown() { return 4*3600000; }
+function getOutsideCooldown(dog) {
+  var size = (dog.weight || 20) < 20 ? 'small' : (dog.weight || 20) < 50 ? 'medium' : 'large';
+  return size === 'small' ? 2*3600000 : size === 'medium' ? 3*3600000 : 4*3600000;
+}
+
+// Pull all users from Firebase and build schedules on the server
+async function buildSchedulesFromFirebase() {
+  try {
+    var snap = await firestore.collection('users').get();
+    var schedules = {};
+    var now = Date.now();
+
+    snap.forEach(function(docSnap) {
+      var userData = docSnap.data();
+      if (!userData || !userData.email) return;
+      if (userData.deleted) return;
+
+      var dogs = userData.dogs || [];
+      if (!dogs.length) return;
+
+      var userId = userData.email;
+      var entries = [];
+
+      dogs.forEach(function(dog) {
+        var name = dog.name || 'Your dog';
+
+        // Feed
+        var lastFed = dog.lastFed ? new Date(dog.lastFed).getTime() : 0;
+        var feedDue = lastFed ? lastFed + getFedCooldown(dog) : now;
+        if (feedDue > now) {
+          entries.push({ dueAt: feedDue, title: '🍽️ ' + name + ' needs to be fed!', body: 'Time to feed ' + name + '.', fired: false });
+        }
+
+        // Water
+        var lastWater = dog.lastWater ? new Date(dog.lastWater).getTime() : 0;
+        var waterDue = lastWater ? lastWater + getWaterCooldown() : now;
+        if (waterDue > now) {
+          entries.push({ dueAt: waterDue, title: '💧 ' + name + ' needs water!', body: "Time to refresh " + name + "'s water bowl.", fired: false });
+        }
+
+        // Outside
+        var lastOutside = dog.lastOutside ? new Date(dog.lastOutside).getTime() : 0;
+        var outsideDue = lastOutside ? lastOutside + getOutsideCooldown(dog) : now;
+        if (outsideDue > now) {
+          entries.push({ dueAt: outsideDue, title: '🌳 ' + name + ' needs to go outside!', body: 'Time to take ' + name + ' for a walk.', fired: false });
+        }
+      });
+
+      if (entries.length) schedules[userId] = entries;
+    });
+
+    console.log('[FIREBASE] Built schedules for', Object.keys(schedules).length, 'users');
+    return schedules;
+  } catch(e) {
+    console.log('[FIREBASE] Error reading users:', e.message);
+    return {};
+  }
+}
 
 app.get('/', function(req, res) {
   res.json({
     status: 'PawTraks push server running',
-    subs: Object.keys(db.subscriptions).length,
-    scheduled: Object.keys(db.schedules).length
+    subs: Object.keys(db.subscriptions).length
   });
 });
 
-// Save push subscription
 app.post('/subscribe', function(req, res) {
   var { userId, subscription } = req.body;
   if (!userId || !subscription || !subscription.endpoint) {
@@ -82,55 +144,28 @@ app.post('/subscribe', function(req, res) {
   res.json({ ok: true });
 });
 
-// Save schedule — expects { userId, schedule: [{ dueAt, title, body }] }
-// The app sends this every time an action is logged, so timestamps are always fresh.
 app.post('/schedule', function(req, res) {
-  var { userId, schedule } = req.body;
-
-  // Support legacy format { dogs: [...] } — just ignore it gracefully
-  if (!userId) return res.status(400).json({ error: 'Missing userId' });
-  if (!Array.isArray(schedule)) {
-    console.log('[SCHEDULE] Received legacy dogs format for', userId, '— ignoring, waiting for app update');
-    return res.json({ ok: true, note: 'legacy format ignored' });
-  }
-
-  // Store entries with a "fired" flag so we only send each one once
-  db.schedules[userId] = schedule.map(function(entry) {
-    return {
-      dueAt: entry.dueAt,
-      title: entry.title,
-      body:  entry.body,
-      fired: false
-    };
-  });
-
-  saveData(db);
-  console.log('[SCHEDULE] Saved', schedule.length, 'entries for:', userId);
+  // App still sends schedules — we accept but ignore since server now reads Firebase directly
   res.json({ ok: true });
 });
 
-// Unsubscribe on logout
 app.post('/unsubscribe', function(req, res) {
   var { userId } = req.body;
   if (userId) {
     delete db.subscriptions[userId];
-    delete db.schedules[userId];
     saveData(db);
     console.log('[UNSUB] Removed:', userId);
   }
   res.json({ ok: true });
 });
 
-// Admin: list subscribers
 app.get('/subscribers', function(req, res) {
   res.json({
     count: Object.keys(db.subscriptions).length,
-    users: Object.keys(db.subscriptions),
-    scheduled: Object.keys(db.schedules)
+    users: Object.keys(db.subscriptions)
   });
 });
 
-// Test notification
 app.post('/test-notify', async function(req, res) {
   var { userId } = req.body;
   var sub = db.subscriptions[userId];
@@ -143,53 +178,37 @@ app.get('/vapid-public-key', function(req, res) {
   res.json({ key: VAPID_PUBLIC });
 });
 
-// ── Cron: check every 5 minutes ───────────────────────────────────────────────
-// Only fires a notification when:
-//   1. The entry's dueAt timestamp has passed (now >= dueAt)
-//   2. The entry has not already been fired (fired === false)
-// When the user logs an action in the app, the app posts a fresh schedule with
-// new dueAt timestamps, resetting the fired flags automatically.
-
+// Cron: every 5 minutes — pull from Firebase, fire due notifications
 cron.schedule('*/5 * * * *', async function() {
   var now = Date.now();
-  var userIds = Object.keys(db.schedules);
-  console.log('[CRON]', new Date().toISOString(), '—', userIds.length, 'users with schedules');
+  console.log('[CRON]', new Date().toISOString(), '— checking Firebase for due notifications');
 
-  var changed = false;
+  var schedules = await buildSchedulesFromFirebase();
+  var userIds = Object.keys(schedules);
 
   for (var i = 0; i < userIds.length; i++) {
     var userId = userIds[i];
     var sub = db.subscriptions[userId];
     if (!sub) continue;
 
-    var entries = db.schedules[userId];
-    if (!Array.isArray(entries)) continue;
+    var entries = schedules[userId];
 
     for (var j = 0; j < entries.length; j++) {
       var entry = entries[j];
-      if (entry.fired) continue;           // already sent — skip
-      if (now < entry.dueAt) continue;     // not due yet — skip
+      if (now < entry.dueAt) continue;
 
       var result = await sendPush(sub, entry.title, entry.body, 'scheduled-' + j);
 
       if (result === 'expired') {
-        // Subscription dead — clean it up and stop
         delete db.subscriptions[userId];
-        changed = true;
+        saveData(db);
         break;
-      }
-
-      if (result) {
-        entry.fired = true;  // mark sent so we never fire this entry again
-        changed = true;
-        console.log('[CRON] Fired:', entry.title, 'for', userId);
       }
     }
   }
-
-  if (changed) saveData(db);
 });
 
+// Also install firebase-admin on startup check
 var PORT = process.env.PORT || 3001;
 app.listen(PORT, function() {
   console.log('PawTraks push server running on port', PORT);
