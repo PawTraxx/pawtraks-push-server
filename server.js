@@ -7,7 +7,13 @@ const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 
 // Init Firebase Admin
-var serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+var serviceAccount;
+try {
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+} catch(e) {
+  console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT:', e.message);
+  process.exit(1);
+}
 initializeApp({ credential: cert(serviceAccount) });
 var firestore = getFirestore();
 
